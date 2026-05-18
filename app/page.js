@@ -93,7 +93,7 @@ export default function Page() {
 
   useEffect(() => () => pollingRef.current && clearInterval(pollingRef.current), []);
 
-  const canGenerate = useMemo(() => imageFile && videoFile && !["UPLOADING", "GENERATING"].includes(status), [imageFile, videoFile, status]);
+  const canGenerate = useMemo(() => imageFile && videoFile && !["UPLOADING", "GENERATING", "IN_PROGRESS"].includes(status), [imageFile, videoFile, status]);
   const stepState = useMemo(() => ({
     uploading: ["UPLOADING", "GENERATING", "IN_PROGRESS", "COMPLETED"].includes(status),
     generating: ["GENERATING", "IN_PROGRESS", "COMPLETED"].includes(status),
@@ -303,6 +303,9 @@ export default function Page() {
             <div className="promptFooter"><small>{prompt.length}/{MAX_PROMPT}</small></div>
             <div className="chips">{QUICK_PROMPTS.map((chip) => <button key={chip} className="chip" onClick={() => setPrompt((p) => `${p}${p ? ", " : ""}${chip}`)}>{chip}</button>)}</div>
           </div>
+          <button className={`generateBtn inlineGenerate ${status === "IN_PROGRESS" ? "pulse" : ""}`} disabled={!canGenerate} onClick={onGenerate}>{statusText(status)}</button>
+          <small className="generateHint">Pastikan image dan video sudah sesuai sebelum generate.</small>
+
         </div>
 
         <div className="panel right fadeIn">
