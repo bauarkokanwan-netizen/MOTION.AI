@@ -8,37 +8,104 @@ const MODELS = [
   { label: "Kling 3 Standard", value: "kling-v3-motion-control-std" },
   { label: "Kling 3 Pro", value: "kling-v3-motion-control-pro" }
 ];
+
 const ACCEPTED_IMAGE = ["image/jpeg", "image/jpg", "image/png", "image/webp"];
 const ACCEPTED_VIDEO = ["video/mp4", "video/quicktime", "video/webm", "video/x-m4v"];
 
-const fmt = (bytes) => `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+const formatSize = (bytes) => `${(bytes / 1024 / 1024).toFixed(2)} MB`;
+
+function FileDropzone({ title, hint, accept, file, preview, type, onSelect, onRemove }) {
+  const inputRef = useRef(null);
+  const [drag, setDrag] = useState(false);
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    setDrag(false);
+    const f = e.dataTransfer?.files?.[0];
+    if (f) onSelect(f);
+  };
+
+  return (
+    <div className={`uploadCard ${drag ? "drag" : ""}`} onDragOver={(e) => { e.preventDefault(); setDrag(true); }} onDragLeave={() => setDrag(false)} onDrop={onDrop} onClick={() => inputRef.current?.click()}>
+      <input ref={inputRef} type="file" accept={accept} onChange={(e) => onSelect(e.target.files?.[0])} hidden />
+      <div className="uploadHead">
+        <h4>{title}</h4>
+        <span>{hint}</span>
+      </div>
+      {!file && <div className="uploadEmpty"><strong>Drag & drop</strong><p>atau klik untuk upload</p></div>}
+      {file && (
+        <div className="uploadPreviewWrap" onClick={(e) => e.stopPropagation()}>
+          {type === "image" ? <img className="uploadPreview" src={preview} alt="Preview" /> : <video className="uploadPreview" controls src={preview} />}
+          <div className="fileMeta">
+            <p>{file.name}</p>
+            <small>{formatSize(file.size)}</small>
+            <button type="button" onClick={onRemove}>Remove</button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
 
 export default function Page() {
-  const [imageFile, setImageFile] = useState(null); const [videoFile, setVideoFile] = useState(null);
-  const [imagePreview, setImagePreview] = useState(""); const [videoPreview, setVideoPreview] = useState("");
-  const [model, setModel] = useState("kling-v3-motion-control-std"); const [prompt, setPrompt] = useState("");
-  const [orientation, setOrientation] = useState("video"); const [cfgScale, setCfgScale] = useState(0.5);
-  const [status, setStatus] = useState("READY"); const [taskId, setTaskId] = useState(""); const [videoUrl, setVideoUrl] = useState("");
-  const [raw, setRaw] = useState(null); const [error, setError] = useState(""); const [history, setHistory] = useState([]);
-  const pollingRef = useRef(null); const startedRef = useRef(0);
+  const [imageFile, setImageFile] = useState(null);
+  const [videoFile, setVideoFile] = useState(null);
+  const [imagePreview, setImagePreview] = useState("");
+  const [videoPreview, setVideoPreview] = useState("");
+  const [model, setModel] = useState("kling-v3-motion-control-std");
+  const [prompt, setPrompt] = useState("");
+  const [orientation, setOrientation] = useState("video");
+  const [cfgScale, setCfgScale] = useState(0.5);
+  const [status, setStatus] = useState("READY");
+  const [taskId, setTaskId] = useState("");
+  const [videoUrl, setVideoUrl] = useState("");
+  const [error, setError] = useState("");
+  const [raw, setRaw] = useState(null);
+  const [history, setHistory] = useState([]);
+  const pollingRef = useRef(null);
+  const startRef = useRef(0);
 
-  useEffect(() => { setHistory(JSON.parse(localStorage.getItem("motion-ai-history") || "[]")); const t = localStorage.getItem("motion-ai-last-task"); if (t) { const p = JSON.parse(t); setTaskId(p.taskId || ""); setModel(p.model || "kling-v3-motion-control-std"); if (p.taskId) setStatus("IN_PROGRESS"); } }, []);
-  useEffect(() => () => { if (pollingRef.current) clearInterval(pollingRef.current); }, []);
+  useEffect(() => {
+    const h = JSON.parse(localStorage.getItem("motion-ai-history") || "[]");
+    setHistory(h);
+    const prevTask = JSON.parse(localStorage.getItem("motion-ai-last-task") || "null");
+    if (prevTask?.taskId) {
+      setTaskId(prevTask.taskId);
+      setModel(prevTask.model || "kling-v3-motion-control-std");
+      setStatus("IN_PROGRESS");
+    }
+  }, []);
 
-  const canGenerate = useMemo(() => imageFile && videoFile && ["READY", "FAILED", "COMPLETED"].includes(status), [imageFile, videoFile, status]);
+  useEffect(() => () => pollingRef.current && clearInterval(pollingRef.current), []);
 
-  const validateFile = (file, type) => {
-    if (!file) return "File tidak ada.";
-    if (type === "image") { if (!ACCEPTED_IMAGE.includes(file.type)) return "Format image tidak didukung. Gunakan jpg/jpeg/png/webp."; if (file.size > 10 * 1024 * 1024) return "File image terlalu besar. Maksimal 10 MB."; }
-    if (type === "video") { if (!ACCEPTED_VIDEO.includes(file.type)) return "Format video tidak didukung. Gunakan mp4/mov/webm/m4v."; if (file.size > 30 * 1024 * 1024) return "File video terlalu besar. Maksimal 30 MB."; }
+  const canGenerate = useMemo(() => imageFile && videoFile && !["UPLOADING", "GENERATING"].includes(status), [imageFile, videoFile, status]);
+
+  const saveHistory = (item) => {
+    const next = [{ ...item, date: new Date().toISOString() }, ...history].slice(0, 10);
+    setHistory(next);
+    localStorage.setItem("motion-ai-history", JSON.stringify(next));
+  };
+
+  const validateFile = (file, kind) => {
+    if (!file) return `${kind === "image" ? "Image" : "Video"} wajib dipilih.`;
+    if (kind === "image") {
+      if (!ACCEPTED_IMAGE.includes(file.type)) return "Format image tidak didukung. Gunakan jpg/jpeg/png/webp.";
+      if (file.size > 10 * 1024 * 1024) return "File image terlalu besar. Maksimal 10 MB.";
+    }
+    if (kind === "video") {
+      if (!ACCEPTED_VIDEO.includes(file.type)) return "Format video tidak didukung. Gunakan mp4/mov/webm/m4v.";
+      if (file.size > 30 * 1024 * 1024) return "File video terlalu besar. Maksimal 30 MB.";
+    }
     return "";
   };
 
-  const uploadToCloudinary = async (file, resourceType) => {
+  const uploadToCloudinary = async (file) => {
     const cloudName = process.env.NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME;
     const preset = process.env.NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET;
     if (!cloudName || !preset) throw new Error("Cloudinary belum dikonfigurasi. Isi NEXT_PUBLIC_CLOUDINARY_CLOUD_NAME dan NEXT_PUBLIC_CLOUDINARY_UPLOAD_PRESET.");
-    const form = new FormData(); form.append("file", file); form.append("upload_preset", preset);
+    const form = new FormData();
+    form.append("file", file);
+    form.append("upload_preset", preset);
     const res = await fetch(`https://api.cloudinary.com/v1_1/${cloudName}/auto/upload`, { method: "POST", body: form });
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.secure_url) throw new Error(data?.error?.message || "Upload Cloudinary gagal. Pastikan upload preset unsigned sudah benar.");
