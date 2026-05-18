@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-const API_BASE = "https://api.magnific.com";
 const ENDPOINTS = {
   "kling-v2-6-motion-control-std": "/v1/ai/video/kling-v2-6-motion-control-std",
   "kling-v2-6-motion-control-pro": "/v1/ai/video/kling-v2-6-motion-control-pro",
@@ -54,13 +53,13 @@ const safeReadResponse = async (res) => {
 
 export async function POST(request) {
   try {
-    const apiKey = process.env.MAGNIFIC_API_KEY;
-    if (!apiKey) {
-      return NextResponse.json({ success: false, error: "MAGNIFIC_API_KEY belum diset di environment variables." }, { status: 400 });
-    }
-
     const body = await request.json().catch(() => ({}));
-    const { imageUrl, videoUrl, model = "kling-v3-motion-control-std", prompt, orientation, cfgScale } = body;
+    const { imageUrl, videoUrl, model = "kling-v3-motion-control-std", prompt, orientation, cfgScale, provider = "freepik", apiKey: inputApiKey } = body;
+
+    const apiKey = (inputApiKey || process.env.MAGNIFIC_API_KEY || "").trim();
+    if (!apiKey) {
+      return NextResponse.json({ success: false, error: "API key kosong. Isi input API key atau set MAGNIFIC_API_KEY di environment variables." }, { status: 400 });
+    }
 
     if (!imageUrl || !videoUrl) {
       return NextResponse.json({ success: false, error: "imageUrl dan videoUrl wajib diisi setelah upload Cloudinary selesai." }, { status: 400 });
@@ -77,11 +76,15 @@ export async function POST(request) {
     };
     if (prompt?.trim()) payload.prompt = prompt.trim();
 
-    const res = await withTimeout(`${API_BASE}${path}`, {
+    const useFreepik = provider === "freepik";
+    const baseURL = useFreepik ? "https://api.freepik.com" : "https://api.magnific.com";
+    const authHeader = useFreepik ? { "x-freepik-api-key": apiKey } : { "x-magnific-api-key": apiKey };
+
+    const res = await withTimeout(`${baseURL}${path}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        "x-magnific-api-key": apiKey
+        ...authHeader
       },
       body: JSON.stringify(payload)
     });
@@ -91,9 +94,10 @@ export async function POST(request) {
 
     if (!parsed.ok) {
       const text = JSON.stringify(raw || {});
-      const error =
-        raw?.error ||
-        (parsed.status === 401 ? "Unauthorized / API key salah." : "Generate gagal.");
+      const unknownKey = JSON.stringify(raw || {}).toLowerCase().includes("unknown api key");
+      const error = unknownKey
+        ? "API key tidak dikenali. Pastikan provider benar: pilih Freepik jika memakai Freepik API key, atau Magnific jika memakai Magnific API key."
+        : (raw?.error || (parsed.status === 401 ? "Unauthorized / API key salah." : "Generate gagal."));
       return NextResponse.json({ success: false, error, status: parsed.status, contentType: parsed.contentType, responsePreview: parsed.responsePreview, raw }, { status: res.status });
     }
 
@@ -105,7 +109,7 @@ export async function POST(request) {
       return NextResponse.json({ success: false, error: "Task ID kosong dari response generate.", raw }, { status: 502 });
     }
 
-    return NextResponse.json({ success: true, model, task_id, status, videoUrl: resultVideoUrl, raw });
+    return NextResponse.json({ success: true, model, provider, task_id, status, videoUrl: resultVideoUrl, raw });
   } catch (error) {
     if (error?.name === "AbortError") {
       return NextResponse.json({ success: false, error: "Generate timeout. Coba lagi." }, { status: 504 });

@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 
 export const runtime = "nodejs";
 
-const API_BASE = "https://api.magnific.com";
 const ENDPOINTS = {
   "kling-v2-6-motion-control-std": "/v1/ai/video/kling-v2-6-motion-control-std",
   "kling-v2-6-motion-control-pro": "/v1/ai/video/kling-v2-6-motion-control-pro",
@@ -38,29 +37,33 @@ async function getPayload(request) {
   const url = new URL(request.url);
   const queryTaskId = url.searchParams.get("taskId");
   const queryModel = url.searchParams.get("model");
+  const queryProvider = url.searchParams.get("provider");
 
-  if (queryTaskId) return { taskId: queryTaskId, model: queryModel };
+  if (queryTaskId) return { taskId: queryTaskId, model: queryModel, provider: queryProvider, apiKey: url.searchParams.get("apiKey") || "" };
   const body = await request.json().catch(() => ({}));
-  return { taskId: body.taskId, model: body.model };
+  return { taskId: body.taskId, model: body.model, provider: body.provider, apiKey: body.apiKey };
 }
 
 async function handle(request) {
-  const apiKey = process.env.MAGNIFIC_API_KEY;
+  const { taskId, model = "kling-v3-motion-control-std", provider = "freepik", apiKey: inputApiKey } = await getPayload(request);
+  const apiKey = (inputApiKey || process.env.MAGNIFIC_API_KEY || "").trim();
   if (!apiKey) {
-    return NextResponse.json({ success: false, error: "MAGNIFIC_API_KEY belum diset di environment variables." }, { status: 400 });
+    return NextResponse.json({ success: false, error: "API key kosong. Isi input API key atau set MAGNIFIC_API_KEY di environment variables." }, { status: 400 });
   }
-
-  const { taskId, model = "kling-v3-motion-control-std" } = await getPayload(request);
   if (!taskId) {
     return NextResponse.json({ success: false, error: "taskId kosong. Silakan kirim taskId via query string atau JSON body." }, { status: 400 });
   }
   const path = ENDPOINTS[model];
   if (!path) return NextResponse.json({ success: false, error: "Model tidak valid." }, { status: 400 });
 
-  const res = await fetch(`${API_BASE}${path}/${taskId}`, { headers: { "x-magnific-api-key": apiKey } });
+  const useFreepik = provider === "freepik";
+  const baseURL = useFreepik ? "https://api.freepik.com" : "https://api.magnific.com";
+  const authHeader = useFreepik ? { "x-freepik-api-key": apiKey } : { "x-magnific-api-key": apiKey };
+  const res = await fetch(`${baseURL}${path}/${taskId}`, { headers: authHeader });
   const parsed = await safeReadResponse(res);
   if (!parsed.ok) {
-    const error = parsed.data?.error || (parsed.status === 401 ? "Unauthorized / API key salah." : parsed.status === 429 ? "Rate limit tercapai. Coba lagi sebentar." : "Gagal cek status.");
+    const unknownKey = JSON.stringify(parsed.data || {}).toLowerCase().includes("unknown api key");
+    const error = unknownKey ? "API key tidak dikenali. Pastikan provider benar: pilih Freepik jika memakai Freepik API key, atau Magnific jika memakai Magnific API key." : (parsed.data?.error || (parsed.status === 401 ? "Unauthorized / API key salah." : parsed.status === 429 ? "Rate limit tercapai. Coba lagi sebentar." : "Gagal cek status."));
     return NextResponse.json({ success: false, error, status: parsed.status, contentType: parsed.contentType, responsePreview: parsed.responsePreview, raw: parsed.data }, { status: res.status });
   }
 
@@ -69,6 +72,7 @@ async function handle(request) {
     success: true,
     task_id: getTaskId(raw) || taskId,
     model,
+    provider,
     status: normalizeStatus(getStatus(raw)),
     videoUrl: getVideoUrl(raw),
     raw

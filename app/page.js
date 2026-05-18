@@ -78,6 +78,7 @@ export default function Page() {
   const [history, setHistory] = useState([]);
   const [apiKeyInput, setApiKeyInput] = useState("");
   const [showApiKey, setShowApiKey] = useState(false);
+  const [provider, setProvider] = useState("freepik");
   const pollingRef = useRef(null);
   const startRef = useRef(0);
 
@@ -87,6 +88,7 @@ export default function Page() {
     if (prevTask?.taskId) {
       setTaskId(prevTask.taskId);
       setModel(prevTask.model || "kling-v3-motion-control-std");
+      setProvider(prevTask.provider || "freepik");
       setStatus("IN_PROGRESS");
     }
   }, []);
@@ -138,7 +140,12 @@ export default function Page() {
     try {
       const ac = new AbortController();
       setTimeout(() => ac.abort(), 20000);
-      const res = await fetch(`/api/status?taskId=${encodeURIComponent(currentTaskId)}&model=${encodeURIComponent(currentModel)}`, { signal: ac.signal });
+      const res = await fetch(`/api/status?taskId=${encodeURIComponent(currentTaskId)}&model=${encodeURIComponent(currentModel)}&provider=${encodeURIComponent(provider)}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        signal: ac.signal,
+        body: JSON.stringify({ taskId: currentTaskId, model: currentModel, provider, apiKey: apiKeyInput.trim() || undefined })
+      });
       const data = await res.json();
       setRaw(data.raw || data);
       if (!res.ok || !data.success) throw new Error(data.error || "Gagal cek status.");
@@ -186,14 +193,14 @@ export default function Page() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         signal: ac.signal,
-        body: JSON.stringify({ imageUrl, videoUrl: uploadedVideoUrl, model, prompt, orientation, cfgScale })
+        body: JSON.stringify({ imageUrl, videoUrl: uploadedVideoUrl, model, prompt, orientation, cfgScale, provider, apiKey: apiKeyInput.trim() || undefined })
       });
       const data = await res.json();
       setRaw(data.raw || data);
       if (!res.ok || !data.success) throw new Error(data.error || "Generate gagal.");
       setTaskId(data.task_id);
       setStatus(data.status || "IN_PROGRESS");
-      localStorage.setItem("motion-ai-last-task", JSON.stringify({ taskId: data.task_id, model }));
+      localStorage.setItem("motion-ai-last-task", JSON.stringify({ taskId: data.task_id, model, provider }));
       if (data.videoUrl) setVideoUrl(data.videoUrl);
       if ((data.status || "IN_PROGRESS") === "IN_PROGRESS") startPolling(data.task_id, model);
       saveHistory({ taskId: data.task_id, model, status: data.status || "IN_PROGRESS", videoUrl: data.videoUrl });
@@ -241,6 +248,11 @@ export default function Page() {
               <button type="button" className="ghostBtn" onClick={() => setShowApiKey((v) => !v)}>{showApiKey ? "Hide" : "Show"}</button>
             </div>
             <small>Kosongkan jika admin sudah mengatur MAGNIFIC_API_KEY di Vercel. API key user tidak disimpan.</small>
+            <label className="providerLabel">API Provider</label>
+            <div className="providerSwitch">
+              <button type="button" className={provider === "freepik" ? "active" : ""} onClick={() => setProvider("freepik")}>Freepik</button>
+              <button type="button" className={provider === "magnific" ? "active" : ""} onClick={() => setProvider("magnific")}>Magnific</button>
+            </div>
           </div>
 
           <Dropzone
