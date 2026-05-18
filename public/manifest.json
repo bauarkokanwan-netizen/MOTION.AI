@@ -1,0 +1,11 @@
+{
+  "name": "MOTION.AI",
+  "short_name": "MOTION.AI",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#050509",
+  "theme_color": "#7c6eff",
+  "icons": [
+    { "src": "/icons/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
