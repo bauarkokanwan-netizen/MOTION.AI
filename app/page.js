@@ -112,188 +112,87 @@ export default function Page() {
     return data.secure_url;
   };
 
-  const checkStatus = async (currentTaskId = taskId, currentModel = model, silent = false) => {
-    if (!currentTaskId) return setError("Task ID kosong.");
-    try {
-      const ac = new AbortController();
-      setTimeout(() => ac.abort(), 20000);
-      const res = await fetch(`/api/status?taskId=${encodeURIComponent(currentTaskId)}&model=${encodeURIComponent(currentModel)}`, { signal: ac.signal });
-      const data = await res.json();
-      setRaw(data.raw || data);
-      if (!res.ok || !data.success) throw new Error(data.error || "Gagal cek status.");
-      setStatus(data.status || "IN_PROGRESS");
-      if (data.videoUrl) setVideoUrl(data.videoUrl);
-      if (["COMPLETED", "FAILED"].includes(data.status)) {
-        pollingRef.current && clearInterval(pollingRef.current);
-        saveHistory({ taskId: data.task_id, model: currentModel, status: data.status, videoUrl: data.videoUrl });
-      } else if (!silent) {
-        setError("Status masih IN_PROGRESS.");
-      }
-    } catch (e) {
-      if (!silent) setError(e.message || "Status check gagal.");
-    }
-  };
-
-  const startPolling = (currentTaskId, currentModel) => {
-    pollingRef.current && clearInterval(pollingRef.current);
-    startRef.current = Date.now();
-    pollingRef.current = setInterval(() => {
-      if (Date.now() - startRef.current > 300000) {
-        clearInterval(pollingRef.current);
-        setError("Auto polling berhenti setelah 5 menit. Gunakan tombol check status manual.");
-        return;
-      }
-      checkStatus(currentTaskId, currentModel, true);
+  const pollStatus = (inTaskId, inModel) => {
+    if (pollingRef.current) clearInterval(pollingRef.current);
+    startedRef.current = Date.now();
+    pollingRef.current = setInterval(async () => {
+      if (Date.now() - startedRef.current > 300000) { clearInterval(pollingRef.current); setError("Auto polling berhenti setelah 5 menit. Gunakan tombol Check Status manual."); return; }
+      await checkStatus(inTaskId, inModel, true);
     }, 5000);
   };
 
-  const onGenerate = async () => {
-    setError("");
-    setRaw(null);
-    setVideoUrl("");
+  const checkStatus = async (inTaskId = taskId, inModel = model, silent = false) => {
+    if (!inTaskId) { setError("Task ID kosong."); return; }
     try {
-      const imageErr = validateFile(imageFile, "image");
-      const videoErr = validateFile(videoFile, "video");
-      if (imageErr || videoErr) throw new Error(imageErr || videoErr);
-
-      setStatus("UPLOADING");
-      const imageUrl = await uploadToCloudinary(imageFile);
-      const uploadedVideoUrl = await uploadToCloudinary(videoFile);
-
-      setStatus("GENERATING");
-      const ac = new AbortController();
-      setTimeout(() => ac.abort(), 25000);
-      const res = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        signal: ac.signal,
-        body: JSON.stringify({ imageUrl, videoUrl: uploadedVideoUrl, model, prompt, orientation, cfgScale })
-      });
-      const data = await res.json();
-      setRaw(data.raw || data);
-      if (!res.ok || !data.success) throw new Error(data.error || "Generate gagal.");
-
-      setTaskId(data.task_id);
-      setStatus(data.status || "IN_PROGRESS");
-      localStorage.setItem("motion-ai-last-task", JSON.stringify({ taskId: data.task_id, model }));
-      if (data.videoUrl) setVideoUrl(data.videoUrl);
-      if ((data.status || "IN_PROGRESS") === "IN_PROGRESS") startPolling(data.task_id, model);
-      saveHistory({ taskId: data.task_id, model, status: data.status || "IN_PROGRESS", videoUrl: data.videoUrl });
-    } catch (e) {
-      setStatus("FAILED");
-      setError(e.message || "Generate gagal.");
-    }
+      const controller = new AbortController(); setTimeout(() => controller.abort(), 20000);
+      const res = await fetch(`/api/status?taskId=${encodeURIComponent(inTaskId)}&model=${encodeURIComponent(inModel)}`, { signal: controller.signal });
+      const data = await res.json(); setRaw(data.raw || data);
+      if (!res.ok || !data.success) throw new Error(data.error || "Gagal cek status.");
+      setStatus(data.status || "IN_PROGRESS"); if (data.videoUrl) setVideoUrl(data.videoUrl);
+      if (data.status === "COMPLETED" || data.status === "FAILED") {
+        if (pollingRef.current) clearInterval(pollingRef.current);
+        if (data.status === "FAILED") setError("Status FAILED. Silakan ubah prompt/input lalu coba lagi.");
+        saveHistory({ taskId: data.task_id, model: inModel, status: data.status, videoUrl: data.videoUrl });
+      } else if (!silent) setError("Status masih IN_PROGRESS.");
+    } catch (e) { if (!silent) setError(e.message || "Status check gagal."); }
   };
 
-  return (
-    <main className="page">
-      <div className="bgGlow" />
-      <header className="hero card">
-        <div>
-          <p className="eyebrow">MOTION CONTROL AI STUDIO</p>
-          <h1>MOTION.AI</h1>
-          <p className="subtitle">Kling Motion Control Studio</p>
-        </div>
-        <span className="pwa">PWA Ready</span>
-      </header>
+  const saveHistory = (item) => {
+    const next = [{ ...item, date: new Date().toISOString() }, ...history].slice(0, 10);
+    setHistory(next); localStorage.setItem("motion-ai-history", JSON.stringify(next));
+  };
 
-      <section className="notice card">Gunakan gambar dan video referensi yang aman. Konten vulgar, ofensif, kekerasan ekstrem, atau melanggar hak cipta dapat menyebabkan task gagal.</section>
+  const onGenerate = async () => {
+    setError(""); setRaw(null); setVideoUrl(""); setStatus("UPLOADING");
+    try {
+      const iErr = validateFile(imageFile, "image"); const vErr = validateFile(videoFile, "video"); if (iErr || vErr) throw new Error(iErr || vErr);
+      const imageUrl = await uploadToCloudinary(imageFile, "image");
+      const videoUrlCloud = await uploadToCloudinary(videoFile, "video");
+      setStatus("GENERATING");
+      const controller = new AbortController(); setTimeout(() => controller.abort(), 25000);
+      const res = await fetch("/api/generate", { method: "POST", headers: { "Content-Type": "application/json" }, signal: controller.signal, body: JSON.stringify({ imageUrl, videoUrl: videoUrlCloud, model, prompt, orientation, cfgScale }) });
+      const data = await res.json(); setRaw(data.raw || data);
+      if (!res.ok || !data.success) throw new Error(data.error || "Generate gagal");
+      setTaskId(data.task_id); setStatus(data.status || "IN_PROGRESS");
+      localStorage.setItem("motion-ai-last-task", JSON.stringify({ taskId: data.task_id, model }));
+      if (data.videoUrl) setVideoUrl(data.videoUrl);
+      if ((data.status || "IN_PROGRESS") === "IN_PROGRESS") pollStatus(data.task_id, model);
+      saveHistory({ taskId: data.task_id, model, status: data.status || "IN_PROGRESS", videoUrl: data.videoUrl });
+    } catch (e) { setStatus("FAILED"); setError(e.message || "Generate gagal."); }
+  };
 
-      <div className="dashboard">
-        <section className="leftPane card">
-          <div className="sectionTitle"><h3>Input Studio</h3><span>Status: {status}</span></div>
-
-          <FileDropzone
-            title="Reference Image"
-            hint="jpg/jpeg/png/webp • maks 10 MB"
-            accept="image/jpeg,image/png,image/webp"
-            file={imageFile}
-            preview={imagePreview}
-            type="image"
-            onSelect={(file) => { if (!file) return; setImageFile(file); setImagePreview(URL.createObjectURL(file)); }}
-            onRemove={() => { setImageFile(null); setImagePreview(""); }}
-          />
-
-          <FileDropzone
-            title="Reference Video"
-            hint="mp4/mov/webm/m4v • maks 30 MB"
-            accept="video/mp4,video/quicktime,video/webm,video/x-m4v"
-            file={videoFile}
-            preview={videoPreview}
-            type="video"
-            onSelect={(file) => { if (!file) return; setVideoFile(file); setVideoPreview(URL.createObjectURL(file)); }}
-            onRemove={() => { setVideoFile(null); setVideoPreview(""); }}
-          />
-
-          <div className="formGrid">
-            <label>Model
-              <select value={model} onChange={(e) => setModel(e.target.value)}>{MODELS.map((m) => <option key={m.value} value={m.value}>{m.label}</option>)}</select>
-            </label>
-            <label>Orientation
-              <select value={orientation} onChange={(e) => setOrientation(e.target.value)}><option value="video">video</option><option value="image">image</option></select>
-            </label>
-          </div>
-
-          <label>Prompt
-            <textarea value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="Describe the motion style, camera movement, emotion, or cinematic direction..." />
-          </label>
-
-          <label>CFG Scale <b>{cfgScale.toFixed(2)}</b>
-            <input type="range" min="0" max="1" step="0.01" value={cfgScale} onChange={(e) => setCfgScale(Number(e.target.value))} />
-            <small>0 bebas, 1 lebih mengikuti prompt</small>
-          </label>
-        </section>
-
-        <section className="rightPane card">
-          <div className="resultHeader">
-            <h3>Cinematic Result</h3>
-            <span className={`badge ${status.toLowerCase()}`}>{status}</span>
-          </div>
-          <p className="task">Task ID: <code>{taskId || "-"}</code></p>
-          <div className="actionRow">
-            <button onClick={() => taskId && navigator.clipboard.writeText(taskId)}>Copy Task ID</button>
-            <button onClick={() => checkStatus()}>Manual Check Status</button>
-          </div>
-
-          {videoUrl ? (
-            <div className="resultVideoWrap">
-              <video className="resultVideo" controls src={videoUrl} />
-              <div className="actionRow">
-                <a href={videoUrl} target="_blank">Open in new tab</a>
-                <a href={videoUrl} download>Download</a>
-              </div>
-            </div>
-          ) : <div className="videoPlaceholder">Hasil video akan tampil di sini setelah status COMPLETED.</div>}
-
-          {error && <p className="error">{error}</p>}
-
-          <details>
-            <summary>Raw response debug</summary>
-            <pre>{JSON.stringify(raw, null, 2)}</pre>
-          </details>
-
-          <div className="historyTop">
-            <h4>History</h4>
-            <button onClick={() => { setHistory([]); localStorage.removeItem("motion-ai-history"); }}>Clear</button>
-          </div>
-          <div className="historyList">
-            {history.map((item, idx) => (
-              <div key={`${item.taskId}-${idx}`} className="historyItem">
-                <p>{new Date(item.date).toLocaleString()} • {item.status}</p>
-                <small>{item.model}</small>
-                {item.videoUrl && <video src={item.videoUrl} controls />}
-                <button onClick={() => { setTaskId(item.taskId); setModel(item.model); setStatus(item.status); setVideoUrl(item.videoUrl || ""); }}>Restore</button>
-              </div>
-            ))}
-          </div>
-        </section>
-      </div>
-
-      <div className="stickyGenerate">
-        <button className="generateBtn" disabled={!canGenerate} onClick={onGenerate}>
-          {status === "UPLOADING" ? "Uploading to Cloudinary..." : status === "GENERATING" ? "Sending to Kling..." : "Generate Motion Video"}
-        </button>
-      </div>
-    </main>
-  );
+  return <main className="container">
+    <header className="header card"><div><h1>MOTION.AI</h1><p>Kling Motion Control Studio</p></div><span className="badge">PWA Ready</span></header>
+    <section className="notice card">Gunakan gambar dan video referensi yang aman. Konten vulgar, ofensif, kekerasan ekstrem, atau melanggar hak cipta dapat menyebabkan task gagal.</section>
+    <div className="grid">
+      <section className="card">
+        <h3>Reference Image</h3>
+        <input type="file" accept="image/jpeg,image/png,image/webp" onChange={(e)=>{const f=e.target.files?.[0];setImageFile(f||null);setImagePreview(f?URL.createObjectURL(f):"");}} />
+        {imageFile && <p>{imageFile.name} • {fmt(imageFile.size)} <button onClick={()=>{setImageFile(null);setImagePreview("");}}>Remove</button></p>}
+        {imagePreview && <img src={imagePreview} alt="preview" className="preview" />}
+        <h3>Reference Video</h3>
+        <input type="file" accept="video/mp4,video/quicktime,video/webm,video/x-m4v" onChange={(e)=>{const f=e.target.files?.[0];setVideoFile(f||null);setVideoPreview(f?URL.createObjectURL(f):"");}} />
+        {videoFile && <p>{videoFile.name} • {fmt(videoFile.size)} <button onClick={()=>{setVideoFile(null);setVideoPreview("");}}>Remove</button></p>}
+        {videoPreview && <video className="preview" controls src={videoPreview} />}
+        <p className="hint">Rekomendasi video 3–10 detik. Testing cepat 2–5 MB.</p>
+        <label>Model<select value={model} onChange={(e)=>setModel(e.target.value)}>{MODELS.map((m)=><option key={m.value} value={m.value}>{m.label}</option>)}</select></label>
+        <label>Prompt<textarea placeholder="Describe the motion style, camera movement, emotion, or cinematic direction..." value={prompt} onChange={(e)=>setPrompt(e.target.value)} /></label>
+        <label>Orientation<select value={orientation} onChange={(e)=>setOrientation(e.target.value)}><option value="video">video</option><option value="image">image</option></select></label>
+        <label>CFG Scale ({cfgScale})<input type="range" min="0" max="1" step="0.01" value={cfgScale} onChange={(e)=>setCfgScale(Number(e.target.value))} /></label>
+        <p className="hint">0 bebas, 1 lebih mengikuti prompt</p>
+      </section>
+      <section className="card">
+        <h3>Result</h3><span className={`status ${status.toLowerCase()}`}>{status}</span>
+        <p>Task ID: {taskId || "-"}</p>
+        <div className="actions"><button onClick={()=>taskId&&navigator.clipboard.writeText(taskId)}>Copy Task ID</button><button onClick={()=>checkStatus()}>Manual Check Status</button></div>
+        {videoUrl && <><video className="preview" controls src={videoUrl} /><div className="actions"><a href={videoUrl} target="_blank">Open</a><a href={videoUrl} download>Download</a></div></>}
+        {error && <p className="error">{error}</p>}
+        <details><summary>Raw response debug</summary><pre>{JSON.stringify(raw, null, 2)}</pre></details>
+        <h4>History</h4>
+        <button onClick={()=>{setHistory([]);localStorage.removeItem("motion-ai-history");}}>Clear History</button>
+        <div className="history">{history.map((h, i)=><div key={i} className="historyItem"><p>{new Date(h.date).toLocaleString()} • {h.model} • {h.status}</p>{h.videoUrl && <video src={h.videoUrl} controls />}<button onClick={()=>{setTaskId(h.taskId);setModel(h.model);setStatus(h.status);setVideoUrl(h.videoUrl||"");}}>Restore</button></div>)}</div>
+      </section>
+    </div>
+    <div className="sticky"><button disabled={!canGenerate} onClick={onGenerate}>{status==="UPLOADING"?"Uploading...":status==="GENERATING"?"Generating...":"Generate Motion Video"}</button></div>
+  </main>;
 }
