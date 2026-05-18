@@ -1,121 +1,266 @@
-import { NextResponse } from "next/server";
-
 export const runtime = "nodejs";
 
 const ENDPOINTS = {
   "kling-v2-6-motion-control-std": "/v1/ai/video/kling-v2-6-motion-control-std",
   "kling-v2-6-motion-control-pro": "/v1/ai/video/kling-v2-6-motion-control-pro",
   "kling-v3-motion-control-std": "/v1/ai/video/kling-v3-motion-control-std",
-  "kling-v3-motion-control-pro": "/v1/ai/video/kling-v3-motion-control-pro"
+  "kling-v3-motion-control-pro": "/v1/ai/video/kling-v3-motion-control-pro",
 };
 
-const withTimeout = async (url, options = {}, timeoutMs = 30000) => {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-  try {
-    return await fetch(url, { ...options, signal: controller.signal });
-  } finally {
-    clearTimeout(timer);
+function normalizeProvider(provider) {
+  const p = String(provider || "magnific").toLowerCase();
+
+  if (p === "freepik") {
+    return {
+      provider: "freepik",
+      baseURL: "https://api.freepik.com",
+      headerName: "x-freepik-api-key",
+    };
   }
-};
 
-const normalizeStatus = (status) => {
+  return {
+    provider: "magnific",
+    baseURL: "https://api.magnific.com",
+    headerName: "x-magnific-api-key",
+  };
+}
+
+function getTaskId(data) {
+  return (
+    data?.task_id ||
+    data?.id ||
+    data?.uuid ||
+    data?.data?.task_id ||
+    data?.data?.id ||
+    data?.data?.uuid ||
+    data?.result?.task_id ||
+    data?.result?.id ||
+    data?.task?.id ||
+    data?.task?.task_id ||
+    null
+  );
+}
+
+function getVideoUrl(data) {
+  return (
+    data?.video_url ||
+    data?.videoUrl ||
+    data?.url ||
+    data?.data?.video_url ||
+    data?.data?.videoUrl ||
+    data?.data?.url ||
+    data?.result?.video_url ||
+    data?.result?.videoUrl ||
+    data?.result?.url ||
+    data?.generated?.[0] ||
+    data?.data?.generated?.[0] ||
+    data?.output?.[0] ||
+    data?.data?.output?.[0] ||
+    null
+  );
+}
+
+function getStatus(data) {
+  return (
+    data?.status ||
+    data?.data?.status ||
+    data?.result?.status ||
+    data?.task?.status ||
+    null
+  );
+}
+
+function normalizeStatus(status) {
   const s = String(status || "").toUpperCase();
-  if (["IN_PROGRESS", "PENDING", "PROCESSING", "QUEUED", "RUNNING"].includes(s)) return "IN_PROGRESS";
-  if (["COMPLETED", "DONE", "SUCCESS", "FINISHED", "SUCCEEDED"].includes(s)) return "COMPLETED";
-  if (["FAILED", "ERROR", "CANCELED", "CANCELLED"].includes(s)) return "FAILED";
-  return s || "IN_PROGRESS";
-};
 
-const getTaskId = (d = {}) => d.task_id || d.id || d.uuid || d?.data?.task_id || d?.data?.id || d?.data?.uuid || d?.result?.task_id || d?.result?.id || d?.task?.id || d?.task?.task_id || null;
-const getStatus = (d = {}) => d.status || d?.data?.status || d?.result?.status || d?.task?.status || null;
-const getVideoUrl = (d = {}) => d.video_url || d.videoUrl || d.url || d?.data?.video_url || d?.data?.videoUrl || d?.data?.url || d?.result?.video_url || d?.result?.videoUrl || d?.result?.url || d?.generated?.[0] || d?.data?.generated?.[0] || d?.output?.[0] || d?.data?.output?.[0] || null;
+  if (["COMPLETED", "DONE", "SUCCESS", "FINISHED", "SUCCEEDED"].includes(s)) {
+    return "COMPLETED";
+  }
 
-const safeReadResponse = async (res) => {
+  if (["FAILED", "ERROR", "CANCELED", "CANCELLED"].includes(s)) {
+    return "FAILED";
+  }
+
+  if (["IN_PROGRESS", "PENDING", "PROCESSING", "QUEUED", "RUNNING"].includes(s)) {
+    return "IN_PROGRESS";
+  }
+
+  return s || "UNKNOWN";
+}
+
+async function safeReadResponse(res) {
   const contentType = res.headers.get("content-type") || "";
-  const status = res.status;
+
   if (contentType.includes("application/json")) {
     const data = await res.json().catch(() => ({}));
-    return { ok: res.ok, status, contentType, data, responsePreview: JSON.stringify(data).slice(0, 500) };
-  }
-  const text = await res.text().catch(() => "");
-  if (text.includes("Request Entity Too Large")) {
     return {
-      ok: false,
-      status,
+      isJson: true,
+      data,
+      text: "",
       contentType,
-      data: { error: "Request terlalu besar. Jangan upload file lewat API route. Gunakan Cloudinary direct upload." },
-      responsePreview: text.slice(0, 500)
     };
   }
-  return { ok: res.ok, status, contentType, data: { error: "Response bukan JSON", text }, responsePreview: text.slice(0, 500) };
-};
 
-export async function POST(request) {
+  const text = await res.text().catch(() => "");
+
+  return {
+    isJson: false,
+    data: {},
+    text,
+    contentType,
+  };
+}
+
+export async function POST(req) {
   try {
-    const body = await request.json().catch(() => ({}));
-    const { imageUrl, videoUrl, model = "kling-v3-motion-control-std", prompt, orientation, cfgScale, provider = "freepik", apiKey: inputApiKey } = body;
+    const body = await req.json().catch(() => null);
 
-    const apiKey = (inputApiKey || process.env.MAGNIFIC_API_KEY || "").trim();
+    if (!body) {
+      return Response.json(
+        { error: "Request body bukan JSON valid." },
+        { status: 400 }
+      );
+    }
+
+    const providerConfig = normalizeProvider(body.provider);
+
+    const apiKey =
+      body.apiKey ||
+      process.env.MAGNIFIC_API_KEY ||
+      process.env.FREEPIK_API_KEY;
+
     if (!apiKey) {
-      return NextResponse.json({ success: false, error: "API key kosong. Isi input API key atau set MAGNIFIC_API_KEY di environment variables." }, { status: 400 });
+      return Response.json(
+        {
+          error:
+            "API key kosong. Isi API key di form atau set MAGNIFIC_API_KEY di Vercel.",
+          debug: {
+            provider: providerConfig.provider,
+            baseURL: providerConfig.baseURL,
+            authHeaderName: providerConfig.headerName,
+          },
+        },
+        { status: 400 }
+      );
     }
 
-    if (!imageUrl || !videoUrl) {
-      return NextResponse.json({ success: false, error: "imageUrl dan videoUrl wajib diisi setelah upload Cloudinary selesai." }, { status: 400 });
+    if (!body.imageUrl || !body.videoUrl) {
+      return Response.json(
+        {
+          error: "imageUrl dan videoUrl wajib ada.",
+        },
+        { status: 400 }
+      );
     }
 
-    const path = ENDPOINTS[model];
-    if (!path) return NextResponse.json({ success: false, error: "Model tidak valid." }, { status: 400 });
+    const model = body.model || "kling-v3-motion-control-std";
+    const endpoint = ENDPOINTS[model];
+
+    if (!endpoint) {
+      return Response.json(
+        {
+          error: "Model tidak dikenal.",
+          allowedModels: Object.keys(ENDPOINTS),
+        },
+        { status: 400 }
+      );
+    }
+
+    const cfgScale = Number(body.cfgScale ?? 0.5);
 
     const payload = {
-      image_url: imageUrl,
-      video_url: videoUrl,
-      character_orientation: orientation || "video",
-      cfg_scale: Number(cfgScale ?? 0.5)
+      image_url: body.imageUrl,
+      video_url: body.videoUrl,
+      character_orientation: body.orientation || "video",
+      cfg_scale: Number.isFinite(cfgScale) ? cfgScale : 0.5,
     };
-    if (prompt?.trim()) payload.prompt = prompt.trim();
 
-    const useFreepik = provider === "freepik";
-    const baseURL = useFreepik ? "https://api.freepik.com" : "https://api.magnific.com";
-    const authHeader = useFreepik ? { "x-freepik-api-key": apiKey } : { "x-magnific-api-key": apiKey };
+    if (body.prompt && String(body.prompt).trim()) {
+      payload.prompt = String(body.prompt).trim();
+    }
 
-    const res = await withTimeout(`${baseURL}${path}`, {
+    const res = await fetch(`${providerConfig.baseURL}${endpoint}`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        ...authHeader
+        [providerConfig.headerName]: apiKey,
       },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
 
     const parsed = await safeReadResponse(res);
-    const raw = parsed.data;
+    const data = parsed.data;
 
-    if (!parsed.ok) {
-      const text = JSON.stringify(raw || {});
-      const unknownKey = JSON.stringify(raw || {}).toLowerCase().includes("unknown api key");
-      const error = unknownKey
-        ? "API key tidak dikenali. Pastikan provider benar: pilih Freepik jika memakai Freepik API key, atau Magnific jika memakai Magnific API key."
-        : (raw?.error || (parsed.status === 401 ? "Unauthorized / API key salah." : "Generate gagal."));
-      return NextResponse.json({ success: false, error, status: parsed.status, contentType: parsed.contentType, responsePreview: parsed.responsePreview, raw }, { status: res.status });
+    const debug = {
+      provider: providerConfig.provider,
+      baseURL: providerConfig.baseURL,
+      endpoint,
+      authHeaderName: providerConfig.headerName,
+      status: res.status,
+      contentType: parsed.contentType,
+      responsePreview: parsed.isJson
+        ? JSON.stringify(data).slice(0, 500)
+        : parsed.text.slice(0, 500),
+    };
+
+    if (!parsed.isJson) {
+      return Response.json(
+        {
+          success: false,
+          error:
+            parsed.text ||
+            `Server tidak mengembalikan JSON. HTTP ${res.status}`,
+          debug,
+        },
+        { status: res.ok ? 502 : res.status }
+      );
     }
 
-    const task_id = getTaskId(raw);
-    const status = normalizeStatus(getStatus(raw));
-    const resultVideoUrl = getVideoUrl(raw);
+    if (!res.ok) {
+      const msg =
+        data?.message ||
+        data?.error ||
+        data?.detail ||
+        data?.data?.message ||
+        data?.data?.error ||
+        `Generate gagal. HTTP ${res.status}`;
 
-    if (!task_id) {
-      return NextResponse.json({ success: false, error: "Task ID kosong dari response generate.", raw }, { status: 502 });
+      const betterMessage = String(msg).toLowerCase().includes("unknown api key")
+        ? `Unknown API key dari ${providerConfig.provider}. Pastikan provider benar, API key tersalin lengkap, dan akun punya akses API untuk endpoint ini.`
+        : msg;
+
+      return Response.json(
+        {
+          success: false,
+          error: betterMessage,
+          raw: data,
+          debug,
+        },
+        { status: res.status }
+      );
     }
 
-    return NextResponse.json({ success: true, model, provider, task_id, status, videoUrl: resultVideoUrl, raw });
-  } catch (error) {
-    if (error?.name === "AbortError") {
-      return NextResponse.json({ success: false, error: "Generate timeout. Coba lagi." }, { status: 504 });
-    }
-    return NextResponse.json({ success: false, error: "Generate gagal karena error server.", detail: String(error?.message || error) }, { status: 500 });
+    const taskId = getTaskId(data);
+    const videoUrl = getVideoUrl(data);
+    const status = normalizeStatus(getStatus(data) || "IN_PROGRESS");
+
+    return Response.json({
+      success: true,
+      provider: providerConfig.provider,
+      model,
+      task_id: taskId,
+      status,
+      videoUrl,
+      raw: data,
+      debug,
+    });
+  } catch (err) {
+    return Response.json(
+      {
+        success: false,
+        error: err?.message || "Generate error.",
+      },
+      { status: 500 }
+    );
   }
 }
-
-export { getTaskId, getStatus, getVideoUrl, normalizeStatus, safeReadResponse };
